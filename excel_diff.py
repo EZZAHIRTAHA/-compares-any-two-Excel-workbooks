@@ -1,5 +1,3 @@
-
-
 import argparse
 from pathlib import Path
 import sys
@@ -19,6 +17,18 @@ def load_sheet(path: Path, sheet, key_cols):
     return df.astype(str)
 
 
+def align_dataframes(df_a, df_b):
+    """Align two DataFrames to have the same columns for comparison."""
+    # Get all unique columns from both DataFrames
+    all_columns = df_a.columns.union(df_b.columns)
+    
+    # Reindex both DataFrames to have the same columns, filling missing columns with empty strings
+    df_a_aligned = df_a.reindex(columns=all_columns, fill_value='')
+    df_b_aligned = df_b.reindex(columns=all_columns, fill_value='')
+    
+    return df_a_aligned, df_b_aligned
+
+
 def main():
     ap = argparse.ArgumentParser(description="Compare two Excel files.")
     ap.add_argument("file_a", type=Path, help="Older / baseline workbook")
@@ -34,22 +44,51 @@ def main():
     df_a = load_sheet(args.file_a, args.sheet, args.key)
     df_b = load_sheet(args.file_b, args.sheet, args.key)
 
+    # Debug: Print column information
+    print(f"Columns in {args.file_a.name}: {list(df_a.columns)}")
+    print(f"Columns in {args.file_b.name}: {list(df_b.columns)}")
+
     only_in_a = df_a.loc[~df_a.index.isin(df_b.index)]
     only_in_b = df_b.loc[~df_b.index.isin(df_a.index)]
 
-    common_a = df_a.loc[df_a.index.intersection(df_b.index)]
-    common_b = df_b.loc[common_a.index]
-    modified = common_a.compare(common_b, keep_equal=False)  
+    # Get common rows
+    common_indices = df_a.index.intersection(df_b.index)
+    common_a = df_a.loc[common_indices]
+    common_b = df_b.loc[common_indices]
+    
+    # Align the DataFrames to have the same columns
+    common_a_aligned, common_b_aligned = align_dataframes(common_a, common_b)
+    
+    # Now compare the aligned DataFrames
+    try:
+        modified = common_a_aligned.compare(common_b_aligned, keep_equal=False)
+    except ValueError as e:
+        print(f"Warning: Could not compare DataFrames: {e}")
+        # Create an empty DataFrame with appropriate structure if comparison fails
+        modified = pd.DataFrame()
 
     print(f"Rows only in {args.file_a.name}: {len(only_in_a)}")
     print(f"Rows only in {args.file_b.name}: {len(only_in_b)}")
-    print(f"Rows with modified data:     {modified.index.nlevels and modified.index.get_level_values(0).nunique() or 0}")
+    
+    # Calculate modified rows count more safely
+    modified_count = 0
+    if not modified.empty:
+        if modified.index.nlevels > 1:
+            modified_count = modified.index.get_level_values(0).nunique()
+        else:
+            modified_count = len(modified)
+    
+    print(f"Rows with modified data: {modified_count}")
 
     if args.out:
         with pd.ExcelWriter(args.out, engine="openpyxl") as xl:
             only_in_a.to_excel(xl, sheet_name="Deleted_rows")
             only_in_b.to_excel(xl, sheet_name="Added_rows")
-            modified.to_excel(xl, sheet_name="Modified_cells")
+            if not modified.empty:
+                modified.to_excel(xl, sheet_name="Modified_cells")
+            else:
+                # Create an empty sheet if no modifications
+                pd.DataFrame().to_excel(xl, sheet_name="Modified_cells")
         print(f"Full detail written to {args.out.resolve()}")
 
 
